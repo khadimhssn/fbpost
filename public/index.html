@@ -1,0 +1,987 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>X → Facebook Bot</title>
+  <link href="https://fonts.googleapis.com/css2?family=Space+Mono:wght@400;700&family=DM+Sans:wght@300;400;500;600&display=swap" rel="stylesheet" />
+  <style>
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+    :root {
+      --bg: #0d0d0f;
+      --surface: #16161a;
+      --surface2: #1e1e24;
+      --border: #2a2a35;
+      --accent: #7c5cfc;
+      --accent2: #00c6ae;
+      --danger: #ff4d6d;
+      --warning: #ffb347;
+      --success: #00e5a0;
+      --text: #f0f0f5;
+      --muted: #666680;
+      --mono: 'Space Mono', monospace;
+      --sans: 'DM Sans', sans-serif;
+    }
+
+    body {
+      font-family: var(--sans);
+      background: var(--bg);
+      color: var(--text);
+      min-height: 100vh;
+      overflow-x: hidden;
+    }
+
+    /* Background grid */
+    body::before {
+      content: '';
+      position: fixed;
+      inset: 0;
+      background-image:
+        linear-gradient(rgba(124,92,252,0.04) 1px, transparent 1px),
+        linear-gradient(90deg, rgba(124,92,252,0.04) 1px, transparent 1px);
+      background-size: 40px 40px;
+      pointer-events: none;
+      z-index: 0;
+    }
+
+    .layout { position: relative; z-index: 1; display: flex; min-height: 100vh; }
+
+    /* Sidebar */
+    .sidebar {
+      width: 240px;
+      background: var(--surface);
+      border-right: 1px solid var(--border);
+      padding: 24px 0;
+      display: flex;
+      flex-direction: column;
+      position: fixed;
+      top: 0; left: 0; bottom: 0;
+    }
+
+    .logo {
+      padding: 0 20px 24px;
+      border-bottom: 1px solid var(--border);
+    }
+
+    .logo-mark {
+      font-family: var(--mono);
+      font-size: 11px;
+      color: var(--accent);
+      letter-spacing: 3px;
+      text-transform: uppercase;
+      margin-bottom: 6px;
+    }
+
+    .logo h1 {
+      font-size: 18px;
+      font-weight: 600;
+      display: flex;
+      align-items: center;
+      gap: 8px;
+    }
+
+    .logo-icon {
+      width: 28px; height: 28px;
+      background: linear-gradient(135deg, var(--accent), var(--accent2));
+      border-radius: 8px;
+      display: flex; align-items: center; justify-content: center;
+      font-size: 14px;
+    }
+
+    .nav { padding: 16px 0; flex: 1; }
+
+    .nav-item {
+      display: flex;
+      align-items: center;
+      gap: 12px;
+      padding: 10px 20px;
+      font-size: 14px;
+      font-weight: 500;
+      color: var(--muted);
+      cursor: pointer;
+      transition: all 0.2s;
+      border-left: 3px solid transparent;
+    }
+
+    .nav-item:hover { color: var(--text); background: rgba(124,92,252,0.05); }
+    .nav-item.active { color: var(--accent); border-left-color: var(--accent); background: rgba(124,92,252,0.08); }
+    .nav-item .icon { font-size: 18px; width: 20px; text-align: center; }
+
+    .status-dot {
+      width: 8px; height: 8px;
+      border-radius: 50%;
+      background: var(--success);
+      box-shadow: 0 0 8px var(--success);
+      animation: pulse 2s infinite;
+      margin-left: auto;
+    }
+
+    @keyframes pulse {
+      0%, 100% { opacity: 1; }
+      50% { opacity: 0.4; }
+    }
+
+    .sidebar-footer {
+      padding: 16px 20px;
+      border-top: 1px solid var(--border);
+      font-family: var(--mono);
+      font-size: 11px;
+      color: var(--muted);
+    }
+
+    /* Main content */
+    .main {
+      margin-left: 240px;
+      flex: 1;
+      padding: 32px;
+    }
+
+    .tab-content { display: none; }
+    .tab-content.active { display: block; }
+
+    /* Page header */
+    .page-header {
+      margin-bottom: 28px;
+      display: flex;
+      align-items: flex-start;
+      justify-content: space-between;
+    }
+
+    .page-title { font-size: 26px; font-weight: 600; margin-bottom: 4px; }
+    .page-subtitle { font-size: 14px; color: var(--muted); }
+
+    /* Stats row */
+    .stats-row {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+      gap: 16px;
+      margin-bottom: 28px;
+    }
+
+    .stat-card {
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: 12px;
+      padding: 20px;
+      transition: border-color 0.2s;
+    }
+
+    .stat-card:hover { border-color: var(--accent); }
+
+    .stat-label {
+      font-size: 11px;
+      font-family: var(--mono);
+      letter-spacing: 1.5px;
+      text-transform: uppercase;
+      color: var(--muted);
+      margin-bottom: 8px;
+    }
+
+    .stat-value {
+      font-size: 32px;
+      font-weight: 700;
+      font-family: var(--mono);
+    }
+
+    .stat-value.green { color: var(--success); }
+    .stat-value.purple { color: var(--accent); }
+    .stat-value.red { color: var(--danger); }
+    .stat-value.teal { color: var(--accent2); }
+
+    /* Cards */
+    .card {
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: 12px;
+      padding: 24px;
+      margin-bottom: 20px;
+    }
+
+    .card-title {
+      font-size: 14px;
+      font-weight: 600;
+      margin-bottom: 16px;
+      display: flex;
+      align-items: center;
+      gap: 8px;
+    }
+
+    /* API health grid */
+    .api-grid {
+      display: grid;
+      grid-template-columns: repeat(3, 1fr);
+      gap: 12px;
+    }
+
+    .api-status {
+      background: var(--surface2);
+      border: 1px solid var(--border);
+      border-radius: 10px;
+      padding: 16px;
+      display: flex;
+      align-items: center;
+      gap: 12px;
+    }
+
+    .api-icon { font-size: 22px; }
+
+    .api-info { flex: 1; }
+    .api-name { font-size: 13px; font-weight: 600; margin-bottom: 2px; }
+    .api-state { font-size: 12px; }
+    .api-state.ok { color: var(--success); }
+    .api-state.err { color: var(--danger); }
+
+    /* Inputs */
+    .input-row {
+      display: flex;
+      gap: 10px;
+    }
+
+    input[type="text"], textarea, select {
+      background: var(--surface2);
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      color: var(--text);
+      font-family: var(--sans);
+      font-size: 14px;
+      padding: 10px 14px;
+      outline: none;
+      transition: border-color 0.2s;
+    }
+
+    input[type="text"]:focus, textarea:focus {
+      border-color: var(--accent);
+    }
+
+    input[type="text"] { flex: 1; }
+    textarea { width: 100%; resize: vertical; min-height: 100px; }
+
+    /* Buttons */
+    .btn {
+      padding: 10px 18px;
+      border-radius: 8px;
+      font-size: 14px;
+      font-weight: 600;
+      font-family: var(--sans);
+      cursor: pointer;
+      border: none;
+      transition: all 0.15s;
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+      white-space: nowrap;
+    }
+
+    .btn-primary {
+      background: var(--accent);
+      color: white;
+    }
+    .btn-primary:hover { background: #6a4de6; transform: translateY(-1px); }
+
+    .btn-success {
+      background: rgba(0,229,160,0.15);
+      color: var(--success);
+      border: 1px solid rgba(0,229,160,0.3);
+    }
+    .btn-success:hover { background: rgba(0,229,160,0.25); }
+
+    .btn-danger {
+      background: rgba(255,77,109,0.12);
+      color: var(--danger);
+      border: 1px solid rgba(255,77,109,0.25);
+      padding: 6px 12px;
+      font-size: 12px;
+    }
+    .btn-danger:hover { background: rgba(255,77,109,0.22); }
+
+    .btn-ghost {
+      background: var(--surface2);
+      color: var(--muted);
+      border: 1px solid var(--border);
+    }
+    .btn-ghost:hover { color: var(--text); border-color: var(--accent); }
+
+    .btn:disabled { opacity: 0.4; cursor: not-allowed; transform: none; }
+
+    /* Accounts table */
+    .accounts-list { display: flex; flex-direction: column; gap: 10px; }
+
+    .account-row {
+      background: var(--surface2);
+      border: 1px solid var(--border);
+      border-radius: 10px;
+      padding: 14px 16px;
+      display: flex;
+      align-items: center;
+      gap: 14px;
+      transition: border-color 0.2s;
+    }
+
+    .account-row:hover { border-color: var(--accent); }
+
+    .account-avatar {
+      width: 36px; height: 36px;
+      background: linear-gradient(135deg, var(--accent), var(--accent2));
+      border-radius: 50%;
+      display: flex; align-items: center; justify-content: center;
+      font-weight: 700;
+      font-size: 14px;
+      flex-shrink: 0;
+    }
+
+    .account-name { font-weight: 600; font-size: 14px; }
+    .account-meta { font-size: 12px; color: var(--muted); font-family: var(--mono); }
+    .account-info { flex: 1; }
+
+    .badge {
+      padding: 3px 8px;
+      border-radius: 20px;
+      font-size: 11px;
+      font-weight: 600;
+      font-family: var(--mono);
+    }
+
+    .badge-active { background: rgba(0,229,160,0.15); color: var(--success); }
+    .badge-paused { background: rgba(255,179,71,0.15); color: var(--warning); }
+
+    /* Toggle */
+    .toggle {
+      width: 36px; height: 20px;
+      background: var(--border);
+      border-radius: 10px;
+      cursor: pointer;
+      position: relative;
+      transition: background 0.2s;
+      border: none;
+      flex-shrink: 0;
+    }
+    .toggle.on { background: var(--accent); }
+    .toggle::after {
+      content: '';
+      position: absolute;
+      width: 14px; height: 14px;
+      border-radius: 50%;
+      background: white;
+      top: 3px; left: 3px;
+      transition: transform 0.2s;
+    }
+    .toggle.on::after { transform: translateX(16px); }
+
+    /* Posts table */
+    .posts-table { width: 100%; border-collapse: collapse; font-size: 13px; }
+    .posts-table th {
+      text-align: left;
+      padding: 8px 12px;
+      font-family: var(--mono);
+      font-size: 11px;
+      letter-spacing: 1px;
+      color: var(--muted);
+      border-bottom: 1px solid var(--border);
+    }
+    .posts-table td {
+      padding: 10px 12px;
+      border-bottom: 1px solid rgba(42,42,53,0.5);
+      vertical-align: top;
+    }
+    .posts-table tr:last-child td { border-bottom: none; }
+    .posts-table tr:hover td { background: rgba(124,92,252,0.04); }
+
+    .truncate { max-width: 200px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    .status-pill { display: inline-block; }
+
+    /* Logs */
+    .log-list { max-height: 500px; overflow-y: auto; }
+    .log-entry {
+      display: flex;
+      gap: 12px;
+      padding: 8px 0;
+      border-bottom: 1px solid rgba(42,42,53,0.4);
+      font-size: 12px;
+      font-family: var(--mono);
+    }
+    .log-time { color: var(--muted); white-space: nowrap; flex-shrink: 0; }
+    .log-level { width: 42px; flex-shrink: 0; }
+    .log-level.info { color: var(--accent2); }
+    .log-level.error { color: var(--danger); }
+    .log-level.warn { color: var(--warning); }
+    .log-msg { color: var(--text); word-break: break-word; }
+
+    /* Test section */
+    .test-grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 12px; }
+
+    .test-card {
+      background: var(--surface2);
+      border: 1px solid var(--border);
+      border-radius: 10px;
+      padding: 18px;
+    }
+    .test-card h3 { font-size: 13px; font-weight: 600; margin-bottom: 6px; display: flex; align-items: center; gap: 6px; }
+    .test-card p { font-size: 12px; color: var(--muted); margin-bottom: 12px; line-height: 1.5; }
+    .test-result {
+      margin-top: 10px;
+      padding: 8px 10px;
+      background: var(--bg);
+      border-radius: 6px;
+      font-size: 12px;
+      font-family: var(--mono);
+      min-height: 32px;
+      display: none;
+    }
+    .test-result.ok { color: var(--success); display: block; }
+    .test-result.fail { color: var(--danger); display: block; }
+
+    /* Prompt editor */
+    .prompt-help {
+      font-size: 12px;
+      color: var(--muted);
+      margin-top: 8px;
+      line-height: 1.6;
+    }
+
+    /* Toast notifications */
+    #toast {
+      position: fixed;
+      bottom: 24px;
+      right: 24px;
+      padding: 12px 20px;
+      border-radius: 10px;
+      font-size: 14px;
+      font-weight: 500;
+      z-index: 1000;
+      transform: translateY(80px);
+      opacity: 0;
+      transition: all 0.3s ease;
+    }
+    #toast.show {
+      transform: translateY(0);
+      opacity: 1;
+    }
+    #toast.success { background: rgba(0,229,160,0.15); border: 1px solid rgba(0,229,160,0.3); color: var(--success); }
+    #toast.error { background: rgba(255,77,109,0.15); border: 1px solid rgba(255,77,109,0.3); color: var(--danger); }
+
+    /* Empty state */
+    .empty {
+      text-align: center;
+      padding: 40px;
+      color: var(--muted);
+      font-size: 14px;
+    }
+    .empty-icon { font-size: 36px; margin-bottom: 10px; }
+
+    /* Poll button animation */
+    @keyframes spin { to { transform: rotate(360deg); } }
+    .spinning { animation: spin 1s linear infinite; display: inline-block; }
+
+    /* Scrollbar */
+    ::-webkit-scrollbar { width: 6px; }
+    ::-webkit-scrollbar-track { background: transparent; }
+    ::-webkit-scrollbar-thumb { background: var(--border); border-radius: 3px; }
+
+    @media (max-width: 900px) {
+      .sidebar { width: 200px; }
+      .main { margin-left: 200px; padding: 20px; }
+      .api-grid, .test-grid { grid-template-columns: 1fr; }
+    }
+  </style>
+</head>
+<body>
+
+<div class="layout">
+  <!-- Sidebar -->
+  <nav class="sidebar">
+    <div class="logo">
+      <div class="logo-mark">Automation</div>
+      <h1>
+        <span class="logo-icon">⚡</span>
+        X → FB Bot
+      </h1>
+    </div>
+    <div class="nav">
+      <div class="nav-item active" data-tab="dashboard" onclick="showTab('dashboard', this)">
+        <span class="icon">📊</span> Dashboard
+        <span class="status-dot" id="main-dot"></span>
+      </div>
+      <div class="nav-item" data-tab="accounts" onclick="showTab('accounts', this)">
+        <span class="icon">👥</span> Accounts
+      </div>
+      <div class="nav-item" data-tab="posts" onclick="showTab('posts', this)">
+        <span class="icon">📝</span> Post History
+      </div>
+      <div class="nav-item" data-tab="settings" onclick="showTab('settings', this)">
+        <span class="icon">⚙️</span> Settings
+      </div>
+      <div class="nav-item" data-tab="logs" onclick="showTab('logs', this)">
+        <span class="icon">📋</span> Logs
+      </div>
+    </div>
+    <div class="sidebar-footer">
+      v1.0.0 · Auto-refreshes<br/>
+      <span id="last-refresh" style="color: var(--accent2)">Connecting...</span>
+    </div>
+  </nav>
+
+  <!-- Main -->
+  <main class="main">
+
+    <!-- DASHBOARD TAB -->
+    <div class="tab-content active" id="tab-dashboard">
+      <div class="page-header">
+        <div>
+          <div class="page-title">Dashboard</div>
+          <div class="page-subtitle">Overview of your X→Facebook automation</div>
+        </div>
+        <button class="btn btn-primary" onclick="triggerPoll(this)">
+          <span id="poll-icon">🔄</span> Poll Now
+        </button>
+      </div>
+
+      <div class="stats-row">
+        <div class="stat-card">
+          <div class="stat-label">Active Accounts</div>
+          <div class="stat-value purple" id="stat-accounts">—</div>
+        </div>
+        <div class="stat-card">
+          <div class="stat-label">Posts Published</div>
+          <div class="stat-value green" id="stat-posted">—</div>
+        </div>
+        <div class="stat-card">
+          <div class="stat-label">Errors</div>
+          <div class="stat-value red" id="stat-errors">—</div>
+        </div>
+        <div class="stat-card">
+          <div class="stat-label">Poll Interval</div>
+          <div class="stat-value teal" id="stat-interval">—<span style="font-size:14px">m</span></div>
+        </div>
+      </div>
+
+      <div class="card">
+        <div class="card-title">🔌 API Connection Health</div>
+        <div class="api-grid">
+          <div class="api-status">
+            <span class="api-icon">🐦</span>
+            <div class="api-info">
+              <div class="api-name">X / Twitter</div>
+              <div class="api-state" id="health-twitter">Checking...</div>
+            </div>
+          </div>
+          <div class="api-status">
+            <span class="api-icon">📘</span>
+            <div class="api-info">
+              <div class="api-name">Facebook</div>
+              <div class="api-state" id="health-facebook">Checking...</div>
+            </div>
+          </div>
+          <div class="api-status">
+            <span class="api-icon">🤖</span>
+            <div class="api-info">
+              <div class="api-name">Claude AI</div>
+              <div class="api-state" id="health-claude">Checking...</div>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <div class="card">
+        <div class="card-title">📰 Recent Posts</div>
+        <div id="recent-posts"></div>
+      </div>
+    </div>
+
+    <!-- ACCOUNTS TAB -->
+    <div class="tab-content" id="tab-accounts">
+      <div class="page-header">
+        <div>
+          <div class="page-title">Monitored Accounts</div>
+          <div class="page-subtitle">Add X/Twitter accounts to watch</div>
+        </div>
+      </div>
+
+      <div class="card">
+        <div class="card-title">➕ Add Account</div>
+        <div class="input-row">
+          <input type="text" id="new-username" placeholder="@username or username" onkeydown="if(event.key==='Enter') addAccount()" />
+          <button class="btn btn-primary" onclick="addAccount()">Add Account</button>
+        </div>
+      </div>
+
+      <div class="card">
+        <div class="card-title">👥 Accounts (<span id="accounts-count">0</span>)</div>
+        <div class="accounts-list" id="accounts-list">
+          <div class="empty"><div class="empty-icon">🔍</div>No accounts yet. Add one above.</div>
+        </div>
+      </div>
+    </div>
+
+    <!-- POSTS TAB -->
+    <div class="tab-content" id="tab-posts">
+      <div class="page-header">
+        <div>
+          <div class="page-title">Post History</div>
+          <div class="page-subtitle">All processed tweets and their Facebook status</div>
+        </div>
+        <button class="btn btn-ghost" onclick="loadPosts()">🔄 Refresh</button>
+      </div>
+
+      <div class="card" style="padding: 0; overflow: hidden;">
+        <div id="posts-container" style="overflow-x: auto;">
+          <table class="posts-table">
+            <thead>
+              <tr>
+                <th>Time</th>
+                <th>Account</th>
+                <th>Original Tweet</th>
+                <th>Rewritten</th>
+                <th>Status</th>
+              </tr>
+            </thead>
+            <tbody id="posts-body">
+              <tr><td colspan="5"><div class="empty"><div class="empty-icon">📭</div>No posts yet</div></td></tr>
+            </tbody>
+          </table>
+        </div>
+      </div>
+    </div>
+
+    <!-- SETTINGS TAB -->
+    <div class="tab-content" id="tab-settings">
+      <div class="page-header">
+        <div>
+          <div class="page-title">Settings</div>
+          <div class="page-subtitle">Configure your AI rewrite prompt and test connections</div>
+        </div>
+      </div>
+
+      <div class="card">
+        <div class="card-title">✍️ AI Rewrite Prompt</div>
+        <textarea id="rewrite-prompt" placeholder="Leave empty to use the default prompt..."></textarea>
+        <p class="prompt-help">
+          This is the instruction Claude uses to rewrite each tweet for Facebook.<br/>
+          Leave empty to use the smart default prompt.
+        </p>
+        <div style="margin-top: 14px;">
+          <button class="btn btn-primary" onclick="saveSettings()">💾 Save Prompt</button>
+        </div>
+      </div>
+
+      <div class="card">
+        <div class="card-title">🧪 Test API Connections</div>
+        <div class="test-grid">
+          <div class="test-card">
+            <h3>🐦 Twitter API</h3>
+            <p>Verifies your Bearer Token is valid and can fetch user data.</p>
+            <button class="btn btn-ghost" onclick="testApi('twitter', this)">Run Test</button>
+            <div class="test-result" id="test-twitter"></div>
+          </div>
+          <div class="test-card">
+            <h3>🤖 Claude AI</h3>
+            <p>Sends a sample tweet and gets a rewritten version back.</p>
+            <button class="btn btn-ghost" onclick="testApi('claude', this)">Run Test</button>
+            <div class="test-result" id="test-claude"></div>
+          </div>
+          <div class="test-card">
+            <h3>📘 Facebook API</h3>
+            <p>⚠️ Posts a real test message to your Facebook Page.</p>
+            <button class="btn btn-ghost" onclick="testApi('facebook', this)">Run Test</button>
+            <div class="test-result" id="test-facebook"></div>
+          </div>
+        </div>
+      </div>
+
+      <div class="card">
+        <div class="card-title">🔑 Environment Variables Guide</div>
+        <div style="font-family: var(--mono); font-size: 12px; line-height: 2;">
+          <div style="color: var(--muted)">Set these in your Railway/cloud environment:</div>
+          <br/>
+          <div><span style="color: var(--accent2)">TWITTER_BEARER_TOKEN</span>=<span style="color: var(--warning)">your_bearer_token</span></div>
+          <div><span style="color: var(--accent2)">ANTHROPIC_API_KEY</span>=<span style="color: var(--warning)">sk-ant-...</span></div>
+          <div><span style="color: var(--accent2)">FACEBOOK_PAGE_ACCESS_TOKEN</span>=<span style="color: var(--warning)">your_page_token</span></div>
+          <div><span style="color: var(--accent2)">FACEBOOK_PAGE_ID</span>=<span style="color: var(--warning)">your_page_id</span></div>
+          <div><span style="color: var(--accent2)">POLL_INTERVAL_MINUTES</span>=<span style="color: var(--warning)">15</span></div>
+        </div>
+      </div>
+    </div>
+
+    <!-- LOGS TAB -->
+    <div class="tab-content" id="tab-logs">
+      <div class="page-header">
+        <div>
+          <div class="page-title">System Logs</div>
+          <div class="page-subtitle">Live activity from the bot</div>
+        </div>
+        <button class="btn btn-ghost" onclick="loadLogs()">🔄 Refresh</button>
+      </div>
+
+      <div class="card">
+        <div class="log-list" id="log-list">
+          <div class="empty">Loading logs...</div>
+        </div>
+      </div>
+    </div>
+
+  </main>
+</div>
+
+<div id="toast"></div>
+
+<script>
+// ─── TAB NAVIGATION ───────────────────────────────────────────────────────────
+function showTab(tab, el) {
+  document.querySelectorAll('.tab-content').forEach(t => t.classList.remove('active'));
+  document.querySelectorAll('.nav-item').forEach(n => n.classList.remove('active'));
+  document.getElementById('tab-' + tab).classList.add('active');
+  el.classList.add('active');
+
+  if (tab === 'accounts') loadAccounts();
+  if (tab === 'posts') loadPosts();
+  if (tab === 'logs') loadLogs();
+  if (tab === 'settings') loadSettings();
+}
+
+// ─── TOAST ─────────────────────────────────────────────────────────────────────
+function toast(msg, type = 'success') {
+  const el = document.getElementById('toast');
+  el.textContent = msg;
+  el.className = 'show ' + type;
+  setTimeout(() => el.className = '', 3000);
+}
+
+// ─── DASHBOARD ────────────────────────────────────────────────────────────────
+async function loadDashboard() {
+  try {
+    const res = await fetch('/api/status');
+    const data = await res.json();
+
+    document.getElementById('stat-accounts').textContent = data.active_accounts;
+    document.getElementById('stat-posted').textContent = data.total_posted;
+    document.getElementById('stat-errors').textContent = data.total_errors;
+    document.getElementById('stat-interval').innerHTML = data.poll_interval_minutes + '<span style="font-size:14px">m</span>';
+
+    const setHealth = (id, ok, label) => {
+      const el = document.getElementById(id);
+      el.textContent = ok ? '✓ Connected' : '✗ Not configured';
+      el.className = 'api-state ' + (ok ? 'ok' : 'err');
+    };
+
+    setHealth('health-twitter', data.twitter_configured);
+    setHealth('health-facebook', data.facebook_configured);
+    setHealth('health-claude', data.anthropic_configured);
+
+    document.getElementById('last-refresh').textContent = new Date().toLocaleTimeString();
+  } catch (e) {
+    document.getElementById('last-refresh').textContent = 'Error';
+  }
+
+  loadRecentPosts();
+}
+
+async function loadRecentPosts() {
+  const res = await fetch('/api/posts?limit=5');
+  const posts = await res.json();
+  const el = document.getElementById('recent-posts');
+
+  if (!posts.length) {
+    el.innerHTML = '<div class="empty"><div class="empty-icon">📭</div>No posts yet. Add accounts and trigger a poll.</div>';
+    return;
+  }
+
+  el.innerHTML = posts.map(p => `
+    <div class="account-row">
+      <div class="account-avatar">${p.account_username[0].toUpperCase()}</div>
+      <div class="account-info">
+        <div class="account-name">@${p.account_username}</div>
+        <div class="account-meta">${p.original_tweet?.substring(0, 80)}...</div>
+      </div>
+      ${statusBadge(p.status)}
+      <span style="font-size:12px;color:var(--muted)">${timeAgo(p.created_at)}</span>
+    </div>
+  `).join('');
+}
+
+// ─── ACCOUNTS ────────────────────────────────────────────────────────────────
+async function loadAccounts() {
+  const res = await fetch('/api/accounts');
+  const accounts = await res.json();
+  const list = document.getElementById('accounts-list');
+  document.getElementById('accounts-count').textContent = accounts.length;
+
+  if (!accounts.length) {
+    list.innerHTML = '<div class="empty"><div class="empty-icon">🔍</div>No accounts yet. Add one above.</div>';
+    return;
+  }
+
+  list.innerHTML = accounts.map(a => `
+    <div class="account-row" id="acc-${a.id}">
+      <div class="account-avatar">${a.username[0].toUpperCase()}</div>
+      <div class="account-info">
+        <div class="account-name">@${a.username}</div>
+        <div class="account-meta">
+          ${a.last_tweet_id ? 'Last ID: ' + a.last_tweet_id.substring(0,10)+'...' : 'Not polled yet'} · Added ${timeAgo(a.created_at)}
+        </div>
+      </div>
+      <span class="badge ${a.active ? 'badge-active' : 'badge-paused'}">${a.active ? 'ACTIVE' : 'PAUSED'}</span>
+      <button class="toggle ${a.active ? 'on' : ''}" onclick="toggleAccount(${a.id}, this)" title="Toggle active"></button>
+      <button class="btn btn-danger" onclick="removeAccount(${a.id}, '${a.username}')">🗑 Remove</button>
+    </div>
+  `).join('');
+}
+
+async function addAccount() {
+  const input = document.getElementById('new-username');
+  const username = input.value.trim();
+  if (!username) return;
+
+  const res = await fetch('/api/accounts', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ username })
+  });
+  const data = await res.json();
+
+  if (data.error) { toast(data.error, 'error'); return; }
+  toast(data.message);
+  input.value = '';
+  loadAccounts();
+}
+
+async function removeAccount(id, username) {
+  if (!confirm(`Remove @${username}?`)) return;
+  await fetch('/api/accounts/' + id, { method: 'DELETE' });
+  toast(`@${username} removed`);
+  loadAccounts();
+}
+
+async function toggleAccount(id, btn) {
+  const res = await fetch(`/api/accounts/${id}/toggle`, { method: 'PATCH' });
+  const data = await res.json();
+  btn.classList.toggle('on', data.active === 1);
+  loadAccounts();
+}
+
+// ─── POSTS ────────────────────────────────────────────────────────────────────
+async function loadPosts() {
+  const res = await fetch('/api/posts?limit=50');
+  const posts = await res.json();
+  const tbody = document.getElementById('posts-body');
+
+  if (!posts.length) {
+    tbody.innerHTML = '<tr><td colspan="5"><div class="empty"><div class="empty-icon">📭</div>No posts yet</div></td></tr>';
+    return;
+  }
+
+  tbody.innerHTML = posts.map(p => `
+    <tr>
+      <td style="color:var(--muted);white-space:nowrap;font-size:11px">${timeAgo(p.created_at)}</td>
+      <td><span style="font-weight:600">@${p.account_username}</span></td>
+      <td><div class="truncate" title="${escHtml(p.original_tweet || '')}">${escHtml(p.original_tweet?.substring(0,80) || '')}...</div></td>
+      <td><div class="truncate" title="${escHtml(p.rewritten_text || p.error || '')}">${escHtml((p.rewritten_text || p.error || '—').substring(0,80))}</div></td>
+      <td>${statusBadge(p.status)}</td>
+    </tr>
+  `).join('');
+}
+
+// ─── SETTINGS ────────────────────────────────────────────────────────────────
+async function loadSettings() {
+  const res = await fetch('/api/settings');
+  const data = await res.json();
+  document.getElementById('rewrite-prompt').value = data.rewrite_prompt || '';
+}
+
+async function saveSettings() {
+  const prompt = document.getElementById('rewrite-prompt').value;
+  await fetch('/api/settings', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ rewrite_prompt: prompt })
+  });
+  toast('Settings saved!');
+}
+
+// ─── LOGS ────────────────────────────────────────────────────────────────────
+async function loadLogs() {
+  const res = await fetch('/api/logs?limit=100');
+  const logs = await res.json();
+  const el = document.getElementById('log-list');
+
+  if (!logs.length) {
+    el.innerHTML = '<div class="empty">No logs yet.</div>';
+    return;
+  }
+
+  el.innerHTML = logs.map(l => `
+    <div class="log-entry">
+      <span class="log-time">${l.created_at?.substring(11,19) || ''}</span>
+      <span class="log-level ${l.level}">${l.level?.toUpperCase()}</span>
+      <span class="log-msg">${escHtml(l.message)}</span>
+    </div>
+  `).join('');
+}
+
+// ─── MANUAL POLL ─────────────────────────────────────────────────────────────
+async function triggerPoll(btn) {
+  btn.disabled = true;
+  document.getElementById('poll-icon').className = 'spinning';
+  document.getElementById('poll-icon').textContent = '🔄';
+
+  await fetch('/api/poll', { method: 'POST' });
+  toast('Poll started! Check logs for progress.');
+
+  setTimeout(() => {
+    btn.disabled = false;
+    document.getElementById('poll-icon').className = '';
+    loadDashboard();
+  }, 3000);
+}
+
+// ─── TEST API ─────────────────────────────────────────────────────────────────
+async function testApi(service, btn) {
+  btn.disabled = true;
+  btn.textContent = 'Testing...';
+  const resEl = document.getElementById('test-' + service);
+  resEl.className = 'test-result';
+  resEl.textContent = '';
+
+  const res = await fetch('/api/test/' + service, { method: 'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({}) });
+  const data = await res.json();
+
+  resEl.textContent = data.message;
+  resEl.className = 'test-result ' + (data.success ? 'ok' : 'fail');
+
+  btn.disabled = false;
+  btn.textContent = 'Run Test';
+}
+
+// ─── UTILS ───────────────────────────────────────────────────────────────────
+function timeAgo(dateStr) {
+  if (!dateStr) return '';
+  const diff = Date.now() - new Date(dateStr + 'Z').getTime();
+  const m = Math.floor(diff / 60000);
+  if (m < 1) return 'just now';
+  if (m < 60) return m + 'm ago';
+  const h = Math.floor(m / 60);
+  if (h < 24) return h + 'h ago';
+  return Math.floor(h / 24) + 'd ago';
+}
+
+function escHtml(str) {
+  return (str || '').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
+}
+
+function statusBadge(status) {
+  const map = {
+    posted: ['badge-active', '✓ Posted'],
+    error: ['', '✗ Error'],
+    processing: ['', '⏳ Processing'],
+    pending: ['', '⏸ Pending'],
+  };
+  const [cls, label] = map[status] || ['', status];
+  const color = status === 'posted' ? 'var(--success)' : status === 'error' ? 'var(--danger)' : 'var(--muted)';
+  return `<span class="badge" style="background:${color}22;color:${color}">${label}</span>`;
+}
+
+// ─── INIT ─────────────────────────────────────────────────────────────────────
+loadDashboard();
+setInterval(loadDashboard, 30000);
+</script>
+</body>
+</html>
