@@ -18,7 +18,6 @@ db.exec(`
   CREATE TABLE IF NOT EXISTS accounts (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     username TEXT UNIQUE NOT NULL,
-    twitter_id TEXT,
     last_tweet_id TEXT,
     active INTEGER DEFAULT 1,
     created_at TEXT DEFAULT (datetime('now'))
@@ -53,7 +52,6 @@ db.exec(`
 function addLog(level, message) {
   console.log(`[${level.toUpperCase()}] ${message}`);
   db.prepare("INSERT INTO logs (level, message) VALUES (?, ?)").run(level, message);
-  // Keep only last 500 logs
   db.prepare("DELETE FROM logs WHERE id NOT IN (SELECT id FROM logs ORDER BY id DESC LIMIT 500)").run();
 }
 
@@ -66,34 +64,115 @@ function setSetting(key, value) {
   db.prepare("INSERT OR REPLACE INTO settings (key, value) VALUES (?, ?)").run(key, value);
 }
 
-// ─── TWITTER/X API ────────────────────────────────────────────────────────────
-async function getTwitterUserId(username) {
-  const token = process.env.TWITTER_BEARER_TOKEN;
-  if (!token) throw new Error("TWITTER_BEARER_TOKEN not set");
+// ─── RSS FEED PARSER ──────────────────────────────────────────────────────────
+// Multiple Nitter instances for fallback reliability
+const NITTER_INSTANCES = [
+  "https://nitter.poast.org",
+  "https://nitter.privacydev.net",
+  "https://nitter.unixfox.eu",
+  "https://nitter.1d4.us",
+];
 
-  const res = await axios.get(
-    `https://api.twitter.com/2/users/by/username/${username}`,
-    { headers: { Authorization: `Bearer ${token}` } }
-  );
-  return res.data.data.id;
+function parseRSS(xml) {
+  const items = [];
+  const itemRegex = /<item>([\s\S]*?)<\/item>/g;
+  let match;
+
+  while ((match = itemRegex.exec(xml)) !== null) {
+    const item = match[1];
+
+    const titleMatch = item.match(/<title><!\[CDATA\[([\s\S]*?)\]\]><\/title>/) ||
+                       item.match(/<title>([\s\S]*?)<\/title>/);
+    const linkMatch = item.match(/<link>([\s\S]*?)<\/link>/);
+    const guidMatch = item.match(/<guid>([\s\S]*?)<\/guid>/);
+    const pubDateMatch = item.match(/<pubDate>([\s\S]*?)<\/pubDate>/);
+    const descMatch = item.match(/<description><!\[CDATA\[([\s\S]*?)\]\]><\/description>/) ||
+                      item.match(/<description>([\s\S]*?)<\/description>/);
+
+    if (titleMatch) {
+      let text = (descMatch ? descMatch[1] : titleMatch[1])
+        .replace(/<[^>]*>/g, "")      // strip HTML tags
+        .replace(/&amp;/g, "&")
+        .replace(/&lt;/g, "<")
+        .replace(/&gt;/g, ">")
+        .replace(/&quot;/g, '"')
+        .replace(/&#39;/g, "'")
+        .replace(/&nbsp;/g, " ")
+        .trim();
+
+      const link = (linkMatch ? linkMatch[1] : guidMatch ? guidMatch[1] : "").trim();
+
+      // Extract tweet ID from URL
+      const idMatch = link.match(/\/status\/(\d+)/);
+      const id = idMatch ? idMatch[1] : link;
+
+      // Skip retweets and replies
+      const title = titleMatch[1].trim();
+      if (title.startsWith("RT @") || title.startsWith("R to @")) continue;
+      if (text.startsWith("RT @")) continue;
+
+      items.push({
+        id,
+        text,
+        url: link,
+        pubDate: pubDateMatch ? pubDateMatch[1].trim() : "",
+      });
+    }
+  }
+
+  return items;
 }
 
-async function getLatestTweets(userId, sinceId = null) {
-  const token = process.env.TWITTER_BEARER_TOKEN;
-  if (!token) throw new Error("TWITTER_BEARER_TOKEN not set");
+async function fetchTweetsViaRSS(username, lastTweetId = null) {
+  let lastError = null;
 
-  const params = {
-    max_results: 5,
-    "tweet.fields": "created_at,text",
-    exclude: "retweets,replies",
-  };
-  if (sinceId) params.since_id = sinceId;
+  for (const instance of NITTER_INSTANCES) {
+    try {
+      const url = `${instance}/${username}/rss`;
+      addLog("info", `Trying RSS: ${url}`);
 
-  const res = await axios.get(
-    `https://api.twitter.com/2/users/${userId}/tweets`,
-    { headers: { Authorization: `Bearer ${token}` }, params }
-  );
-  return res.data.data || [];
+      const res = await axios.get(url, {
+        timeout: 10000,
+        headers: {
+          "User-Agent": "Mozilla/5.0 (compatible; RSS Reader)",
+          "Accept": "application/rss+xml, application/xml, text/xml",
+        },
+      });
+
+      const items = parseRSS(res.data);
+
+      if (!items.length) {
+        addLog("info", `No items found on ${instance}, trying next...`);
+        continue;
+      }
+
+      // Filter to only tweets newer than lastTweetId
+      let newItems = items;
+      if (lastTweetId) {
+        newItems = items.filter(item => {
+          // Compare as BigInt for accurate large number comparison
+          try {
+            return BigInt(item.id) > BigInt(lastTweetId);
+          } catch {
+            return item.id !== lastTweetId;
+          }
+        });
+      } else {
+        // First run — only grab the most recent 1 tweet to avoid spam
+        newItems = items.slice(0, 1);
+      }
+
+      addLog("info", `RSS success via ${instance}: ${items.length} total, ${newItems.length} new`);
+      return newItems;
+
+    } catch (err) {
+      lastError = err;
+      addLog("info", `RSS instance ${instance} failed: ${err.message}`);
+      continue;
+    }
+  }
+
+  throw new Error(`All RSS instances failed. Last error: ${lastError?.message}`);
 }
 
 // ─── CLAUDE AI REWRITE ────────────────────────────────────────────────────────
@@ -147,16 +226,9 @@ async function postToFacebook(message) {
 // ─── CORE POLL LOGIC ──────────────────────────────────────────────────────────
 async function pollAccount(account) {
   try {
-    addLog("info", `Polling @${account.username}...`);
+    addLog("info", `Polling @${account.username} via RSS...`);
 
-    // Resolve Twitter ID if not cached
-    if (!account.twitter_id) {
-      const id = await getTwitterUserId(account.username);
-      db.prepare("UPDATE accounts SET twitter_id = ? WHERE id = ?").run(id, account.id);
-      account.twitter_id = id;
-    }
-
-    const tweets = await getLatestTweets(account.twitter_id, account.last_tweet_id);
+    const tweets = await fetchTweetsViaRSS(account.username, account.last_tweet_id);
 
     if (!tweets || tweets.length === 0) {
       addLog("info", `No new tweets from @${account.username}`);
@@ -165,44 +237,43 @@ async function pollAccount(account) {
 
     addLog("info", `Found ${tweets.length} new tweet(s) from @${account.username}`);
 
-    // Process newest first (reverse so we process oldest→newest)
+    // Process oldest first
     const sorted = [...tweets].reverse();
 
     for (const tweet of sorted) {
-      const tweetUrl = `https://twitter.com/${account.username}/status/${tweet.id}`;
-
-      // Insert pending record
       const insertResult = db.prepare(
         "INSERT INTO posts (account_username, original_tweet, tweet_url, status) VALUES (?, ?, ?, 'processing')"
-      ).run(account.username, tweet.text, tweetUrl);
+      ).run(account.username, tweet.text, tweet.url);
 
       const postId = insertResult.lastInsertRowid;
 
       try {
-        // Step 1: Rewrite
-        addLog("info", `Rewriting tweet ${tweet.id} with Claude...`);
+        addLog("info", `Rewriting tweet with Claude...`);
         const rewritten = await rewriteWithClaude(tweet.text, account.username);
 
-        // Step 2: Post to Facebook
         addLog("info", `Posting to Facebook...`);
         const fbPostId = await postToFacebook(rewritten);
 
-        // Update record as success
         db.prepare(
           "UPDATE posts SET rewritten_text = ?, fb_post_id = ?, status = 'posted' WHERE id = ?"
         ).run(rewritten, fbPostId, postId);
 
         addLog("info", `✅ Posted to Facebook! FB Post ID: ${fbPostId}`);
+
       } catch (err) {
         db.prepare(
           "UPDATE posts SET status = 'error', error = ? WHERE id = ?"
         ).run(err.message, postId);
-        addLog("error", `Failed to process tweet ${tweet.id}: ${err.message}`);
+        addLog("error", `Failed to process tweet: ${err.message}`);
       }
 
-      // Update last seen tweet ID
+      // Always update last seen ID even on error to avoid reprocessing
       db.prepare("UPDATE accounts SET last_tweet_id = ? WHERE id = ?").run(tweet.id, account.id);
+
+      // Small delay between posts to avoid Facebook rate limits
+      await new Promise((r) => setTimeout(r, 3000));
     }
+
   } catch (err) {
     addLog("error", `Error polling @${account.username}: ${err.message}`);
   }
@@ -216,7 +287,7 @@ async function pollAllAccounts() {
   }
   for (const account of accounts) {
     await pollAccount(account);
-    await new Promise((r) => setTimeout(r, 2000)); // 2s delay between accounts
+    await new Promise((r) => setTimeout(r, 2000));
   }
 }
 
@@ -228,7 +299,7 @@ function startCron() {
   if (cronJob) cronJob.stop();
   const mins = parseInt(POLL_INTERVAL);
   const schedule = `*/${Math.max(1, Math.min(59, mins))} * * * *`;
-  addLog("info", `Scheduler started: polling every ${mins} minute(s)`);
+  addLog("info", `Scheduler started: polling every ${mins} minute(s) via RSS (no Twitter API needed)`);
   cronJob = cron.schedule(schedule, () => {
     addLog("info", "⏰ Cron tick — starting poll cycle");
     pollAllAccounts();
@@ -239,7 +310,6 @@ startCron();
 
 // ─── REST API ROUTES ──────────────────────────────────────────────────────────
 
-// Status
 app.get("/api/status", (req, res) => {
   const accounts = db.prepare("SELECT COUNT(*) as c FROM accounts WHERE active=1").get();
   const posts = db.prepare("SELECT COUNT(*) as c FROM posts WHERE status='posted'").get();
@@ -250,13 +320,12 @@ app.get("/api/status", (req, res) => {
     active_accounts: accounts.c,
     total_posted: posts.c,
     total_errors: errors.c,
-    twitter_configured: !!process.env.TWITTER_BEARER_TOKEN,
+    twitter_configured: true, // RSS doesn't need a key
     facebook_configured: !!(process.env.FACEBOOK_PAGE_ACCESS_TOKEN && process.env.FACEBOOK_PAGE_ID),
     anthropic_configured: !!process.env.ANTHROPIC_API_KEY,
   });
 });
 
-// Accounts CRUD
 app.get("/api/accounts", (req, res) => {
   res.json(db.prepare("SELECT * FROM accounts ORDER BY created_at DESC").all());
 });
@@ -290,26 +359,22 @@ app.patch("/api/accounts/:id/toggle", (req, res) => {
   res.json({ success: true, active: newActive });
 });
 
-// Posts log
 app.get("/api/posts", (req, res) => {
   const limit = parseInt(req.query.limit) || 50;
   res.json(db.prepare("SELECT * FROM posts ORDER BY created_at DESC LIMIT ?").all(limit));
 });
 
-// Logs
 app.get("/api/logs", (req, res) => {
   const limit = parseInt(req.query.limit) || 100;
   res.json(db.prepare("SELECT * FROM logs ORDER BY created_at DESC LIMIT ?").all(limit));
 });
 
-// Manual poll trigger
 app.post("/api/poll", async (req, res) => {
   addLog("info", "Manual poll triggered from dashboard");
   res.json({ success: true, message: "Poll started in background" });
   pollAllAccounts();
 });
 
-// Settings
 app.get("/api/settings", (req, res) => {
   const prompt = getSetting("rewrite_prompt") || "";
   res.json({ rewrite_prompt: prompt });
@@ -324,9 +389,8 @@ app.post("/api/settings", (req, res) => {
 // Test endpoints
 app.post("/api/test/twitter", async (req, res) => {
   try {
-    const { username } = req.body;
-    const id = await getTwitterUserId(username || "elonmusk");
-    res.json({ success: true, message: `Twitter API working! User ID: ${id}` });
+    const tweets = await fetchTweetsViaRSS("elonmusk", null);
+    res.json({ success: true, message: `✅ RSS feed working! Found ${tweets.length} tweet(s). No API key needed!` });
   } catch (e) {
     res.json({ success: false, message: e.message });
   }
@@ -351,10 +415,9 @@ app.post("/api/test/claude", async (req, res) => {
   }
 });
 
-// ─── DEBUG ROUTE ──────────────────────────────────────────────────────────────
 app.get("/api/debug", (req, res) => {
   res.json({
-    twitter: process.env.TWITTER_BEARER_TOKEN ? "SET ✅" : "MISSING ❌",
+    rss_mode: "✅ No Twitter API key needed",
     anthropic: process.env.ANTHROPIC_API_KEY ? "SET ✅" : "MISSING ❌",
     facebook_token: process.env.FACEBOOK_PAGE_ACCESS_TOKEN ? "SET ✅" : "MISSING ❌",
     facebook_id: process.env.FACEBOOK_PAGE_ID ? "SET ✅" : "MISSING ❌",
@@ -367,4 +430,5 @@ app.get("/api/debug", (req, res) => {
 const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => {
   addLog("info", `🚀 Server running on http://localhost:${PORT}`);
+  addLog("info", `📡 Using FREE RSS mode — no Twitter API key required!`);
 });
