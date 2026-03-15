@@ -352,6 +352,31 @@ app.post("/api/test/claude", async (req, res) => {
 });
 
 // ─── START SERVER ─────────────────────────────────────────────────────────────
+app.get("/api/debug", (req, res) => {
+  res.json({
+    twitter: process.env.TWITTER_BEARER_TOKEN ? "SET ✅" : "MISSING ❌",
+    anthropic: process.env.ANTHROPIC_API_KEY ? "SET ✅" : "MISSING ❌",
+    facebook_token: process.env.FACEBOOK_PAGE_ACCESS_TOKEN ? "SET ✅" : "MISSING ❌",
+    facebook_id: process.env.FACEBOOK_PAGE_ID ? "SET ✅" : "MISSING ❌",
+    node_env: process.env.NODE_ENV,
+    port: process.env.PORT,
+  });
+});
+```
+
+---
+
+## Step 2 — Wait for Railway to Redeploy
+
+Railway auto-redeploys when you push to GitHub. Wait ~60 seconds.
+
+---
+
+## Step 3 — Visit the Debug URL
+
+Open this in your browser:
+```
+https://your-railway-url.railway.app/api/debug
 const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => {
   addLog("info", `🚀 Server running on http://localhost:${PORT}`);
