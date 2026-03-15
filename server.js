@@ -64,15 +64,19 @@ function setSetting(key, value) {
   db.prepare("INSERT OR REPLACE INTO settings (key, value) VALUES (?, ?)").run(key, value);
 }
 
-// ─── RSS FEED PARSER ──────────────────────────────────────────────────────────
-// Multiple Nitter instances for fallback reliability
-const NITTER_INSTANCES = [
-  "https://nitter.poast.org",
-  "https://nitter.privacydev.net",
-  "https://nitter.unixfox.eu",
-  "https://nitter.1d4.us",
+// ─── RSS SOURCES ──────────────────────────────────────────────────────────────
+// RSSHub is more reliable from server IPs than Nitter
+const RSS_SOURCES = [
+  "https://rsshub.app/twitter/user/{username}",
+  "https://rsshub.rssforever.com/twitter/user/{username}",
+  "https://rsshub.feeded.xyz/twitter/user/{username}",
+  "https://nitter.privacyredirect.com/{username}/rss",
+  "https://twiiit.com/{username}/rss",
+  "https://nitter.catsarch.com/{username}/rss",
+  "https://nitter.sethforprivacy.com/{username}/rss",
 ];
 
+// ─── RSS PARSER ───────────────────────────────────────────────────────────────
 function parseRSS(xml) {
   const items = [];
   const itemRegex = /<item>([\s\S]*?)<\/item>/g;
@@ -83,41 +87,36 @@ function parseRSS(xml) {
 
     const titleMatch = item.match(/<title><!\[CDATA\[([\s\S]*?)\]\]><\/title>/) ||
                        item.match(/<title>([\s\S]*?)<\/title>/);
-    const linkMatch = item.match(/<link>([\s\S]*?)<\/link>/);
-    const guidMatch = item.match(/<guid>([\s\S]*?)<\/guid>/);
-    const pubDateMatch = item.match(/<pubDate>([\s\S]*?)<\/pubDate>/);
-    const descMatch = item.match(/<description><!\[CDATA\[([\s\S]*?)\]\]><\/description>/) ||
-                      item.match(/<description>([\s\S]*?)<\/description>/);
+    const linkMatch  = item.match(/<link>([\s\S]*?)<\/link>/);
+    const guidMatch  = item.match(/<guid[^>]*>([\s\S]*?)<\/guid>/);
+    const descMatch  = item.match(/<description><!\[CDATA\[([\s\S]*?)\]\]><\/description>/) ||
+                       item.match(/<description>([\s\S]*?)<\/description>/);
 
-    if (titleMatch) {
-      let text = (descMatch ? descMatch[1] : titleMatch[1])
-        .replace(/<[^>]*>/g, "")      // strip HTML tags
-        .replace(/&amp;/g, "&")
-        .replace(/&lt;/g, "<")
-        .replace(/&gt;/g, ">")
-        .replace(/&quot;/g, '"')
-        .replace(/&#39;/g, "'")
-        .replace(/&nbsp;/g, " ")
-        .trim();
+    if (!titleMatch) continue;
 
-      const link = (linkMatch ? linkMatch[1] : guidMatch ? guidMatch[1] : "").trim();
+    const title = titleMatch[1].trim();
 
-      // Extract tweet ID from URL
-      const idMatch = link.match(/\/status\/(\d+)/);
-      const id = idMatch ? idMatch[1] : link;
+    // Skip retweets and replies
+    if (title.startsWith("RT @") || title.startsWith("R to @")) continue;
 
-      // Skip retweets and replies
-      const title = titleMatch[1].trim();
-      if (title.startsWith("RT @") || title.startsWith("R to @")) continue;
-      if (text.startsWith("RT @")) continue;
+    let text = (descMatch ? descMatch[1] : title)
+      .replace(/<[^>]*>/g, "")
+      .replace(/&amp;/g,  "&")
+      .replace(/&lt;/g,   "<")
+      .replace(/&gt;/g,   ">")
+      .replace(/&quot;/g, '"')
+      .replace(/&#39;/g,  "'")
+      .replace(/&nbsp;/g, " ")
+      .replace(/\s+/g, " ")
+      .trim();
 
-      items.push({
-        id,
-        text,
-        url: link,
-        pubDate: pubDateMatch ? pubDateMatch[1].trim() : "",
-      });
-    }
+    if (!text || text.length < 5) continue;
+
+    const link = (linkMatch ? linkMatch[1] : guidMatch ? guidMatch[1] : "").trim();
+    const idMatch = link.match(/\/status\/(\d+)/);
+    const id = idMatch ? idMatch[1] : (Date.now().toString() + Math.random().toString().slice(2));
+
+    items.push({ id, text, url: link });
   }
 
   return items;
@@ -126,53 +125,49 @@ function parseRSS(xml) {
 async function fetchTweetsViaRSS(username, lastTweetId = null) {
   let lastError = null;
 
-  for (const instance of NITTER_INSTANCES) {
+  for (const template of RSS_SOURCES) {
+    const url = template.replace("{username}", username);
     try {
-      const url = `${instance}/${username}/rss`;
-      addLog("info", `Trying RSS: ${url}`);
+      addLog("info", `Trying: ${url}`);
 
       const res = await axios.get(url, {
-        timeout: 10000,
+        timeout: 12000,
         headers: {
-          "User-Agent": "Mozilla/5.0 (compatible; RSS Reader)",
-          "Accept": "application/rss+xml, application/xml, text/xml",
+          "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+          "Accept": "application/rss+xml, application/xml, text/xml, */*",
         },
       });
 
       const items = parseRSS(res.data);
 
       if (!items.length) {
-        addLog("info", `No items found on ${instance}, trying next...`);
+        addLog("info", `No items parsed from ${url}, trying next...`);
         continue;
       }
 
-      // Filter to only tweets newer than lastTweetId
+      // Filter new tweets
       let newItems = items;
       if (lastTweetId) {
         newItems = items.filter(item => {
-          // Compare as BigInt for accurate large number comparison
-          try {
-            return BigInt(item.id) > BigInt(lastTweetId);
-          } catch {
-            return item.id !== lastTweetId;
-          }
+          try { return BigInt(item.id) > BigInt(lastTweetId); }
+          catch { return item.id !== lastTweetId; }
         });
       } else {
-        // First run — only grab the most recent 1 tweet to avoid spam
+        // First run — only grab the latest 1 to avoid spamming Facebook
         newItems = items.slice(0, 1);
       }
 
-      addLog("info", `RSS success via ${instance}: ${items.length} total, ${newItems.length} new`);
+      addLog("info", `✅ RSS success via ${url.split("/")[2]}: ${items.length} total, ${newItems.length} new`);
       return newItems;
 
     } catch (err) {
       lastError = err;
-      addLog("info", `RSS instance ${instance} failed: ${err.message}`);
+      addLog("info", `Failed ${url.split("/")[2]}: ${err.message}`);
       continue;
     }
   }
 
-  throw new Error(`All RSS instances failed. Last error: ${lastError?.message}`);
+  throw new Error(`All RSS sources failed. Last: ${lastError?.message}`);
 }
 
 // ─── CLAUDE AI REWRITE ────────────────────────────────────────────────────────
@@ -191,12 +186,10 @@ Keep the core message and facts intact. Return ONLY the rewritten post, nothing 
     {
       model: "claude-sonnet-4-20250514",
       max_tokens: 500,
-      messages: [
-        {
-          role: "user",
-          content: `${customPrompt}\n\nOriginal tweet from @${username}:\n"${tweetText}"\n\nRewritten Facebook post:`,
-        },
-      ],
+      messages: [{
+        role: "user",
+        content: `${customPrompt}\n\nOriginal tweet from @${username}:\n"${tweetText}"\n\nRewritten Facebook post:`,
+      }],
     },
     {
       headers: {
@@ -226,7 +219,7 @@ async function postToFacebook(message) {
 // ─── CORE POLL LOGIC ──────────────────────────────────────────────────────────
 async function pollAccount(account) {
   try {
-    addLog("info", `Polling @${account.username} via RSS...`);
+    addLog("info", `Polling @${account.username}...`);
 
     const tweets = await fetchTweetsViaRSS(account.username, account.last_tweet_id);
 
@@ -237,7 +230,6 @@ async function pollAccount(account) {
 
     addLog("info", `Found ${tweets.length} new tweet(s) from @${account.username}`);
 
-    // Process oldest first
     const sorted = [...tweets].reverse();
 
     for (const tweet of sorted) {
@@ -248,7 +240,7 @@ async function pollAccount(account) {
       const postId = insertResult.lastInsertRowid;
 
       try {
-        addLog("info", `Rewriting tweet with Claude...`);
+        addLog("info", `Rewriting with Claude...`);
         const rewritten = await rewriteWithClaude(tweet.text, account.username);
 
         addLog("info", `Posting to Facebook...`);
@@ -259,21 +251,16 @@ async function pollAccount(account) {
         ).run(rewritten, fbPostId, postId);
 
         addLog("info", `✅ Posted to Facebook! FB Post ID: ${fbPostId}`);
-
       } catch (err) {
         db.prepare(
           "UPDATE posts SET status = 'error', error = ? WHERE id = ?"
         ).run(err.message, postId);
-        addLog("error", `Failed to process tweet: ${err.message}`);
+        addLog("error", `Failed: ${err.message}`);
       }
 
-      // Always update last seen ID even on error to avoid reprocessing
       db.prepare("UPDATE accounts SET last_tweet_id = ? WHERE id = ?").run(tweet.id, account.id);
-
-      // Small delay between posts to avoid Facebook rate limits
       await new Promise((r) => setTimeout(r, 3000));
     }
-
   } catch (err) {
     addLog("error", `Error polling @${account.username}: ${err.message}`);
   }
@@ -299,7 +286,7 @@ function startCron() {
   if (cronJob) cronJob.stop();
   const mins = parseInt(POLL_INTERVAL);
   const schedule = `*/${Math.max(1, Math.min(59, mins))} * * * *`;
-  addLog("info", `Scheduler started: polling every ${mins} minute(s) via RSS (no Twitter API needed)`);
+  addLog("info", `Scheduler started: every ${mins} min via free RSS`);
   cronJob = cron.schedule(schedule, () => {
     addLog("info", "⏰ Cron tick — starting poll cycle");
     pollAllAccounts();
@@ -308,19 +295,18 @@ function startCron() {
 
 startCron();
 
-// ─── REST API ROUTES ──────────────────────────────────────────────────────────
-
+// ─── API ROUTES ───────────────────────────────────────────────────────────────
 app.get("/api/status", (req, res) => {
   const accounts = db.prepare("SELECT COUNT(*) as c FROM accounts WHERE active=1").get();
-  const posts = db.prepare("SELECT COUNT(*) as c FROM posts WHERE status='posted'").get();
-  const errors = db.prepare("SELECT COUNT(*) as c FROM posts WHERE status='error'").get();
+  const posts    = db.prepare("SELECT COUNT(*) as c FROM posts WHERE status='posted'").get();
+  const errors   = db.prepare("SELECT COUNT(*) as c FROM posts WHERE status='error'").get();
   res.json({
     running: true,
     poll_interval_minutes: parseInt(POLL_INTERVAL),
     active_accounts: accounts.c,
     total_posted: posts.c,
     total_errors: errors.c,
-    twitter_configured: true, // RSS doesn't need a key
+    twitter_configured: true,
     facebook_configured: !!(process.env.FACEBOOK_PAGE_ACCESS_TOKEN && process.env.FACEBOOK_PAGE_ID),
     anthropic_configured: !!process.env.ANTHROPIC_API_KEY,
   });
@@ -370,27 +356,24 @@ app.get("/api/logs", (req, res) => {
 });
 
 app.post("/api/poll", async (req, res) => {
-  addLog("info", "Manual poll triggered from dashboard");
-  res.json({ success: true, message: "Poll started in background" });
+  addLog("info", "Manual poll triggered");
+  res.json({ success: true, message: "Poll started" });
   pollAllAccounts();
 });
 
 app.get("/api/settings", (req, res) => {
-  const prompt = getSetting("rewrite_prompt") || "";
-  res.json({ rewrite_prompt: prompt });
+  res.json({ rewrite_prompt: getSetting("rewrite_prompt") || "" });
 });
 
 app.post("/api/settings", (req, res) => {
-  const { rewrite_prompt } = req.body;
-  setSetting("rewrite_prompt", rewrite_prompt || "");
+  setSetting("rewrite_prompt", req.body.rewrite_prompt || "");
   res.json({ success: true });
 });
 
-// Test endpoints
 app.post("/api/test/twitter", async (req, res) => {
   try {
     const tweets = await fetchTweetsViaRSS("elonmusk", null);
-    res.json({ success: true, message: `✅ RSS feed working! Found ${tweets.length} tweet(s). No API key needed!` });
+    res.json({ success: true, message: `✅ RSS working! Got ${tweets.length} tweet(s) — no API key needed!` });
   } catch (e) {
     res.json({ success: false, message: e.message });
   }
@@ -398,9 +381,8 @@ app.post("/api/test/twitter", async (req, res) => {
 
 app.post("/api/test/facebook", async (req, res) => {
   try {
-    const msg = "🤖 Test post from X→Facebook Bot. If you see this, your Facebook connection is working!";
-    const id = await postToFacebook(msg);
-    res.json({ success: true, message: `Facebook API working! Post ID: ${id}` });
+    const id = await postToFacebook("🤖 Test post from X→Facebook Bot. Connection working!");
+    res.json({ success: true, message: `✅ Facebook working! Post ID: ${id}` });
   } catch (e) {
     res.json({ success: false, message: e.message });
   }
@@ -417,11 +399,10 @@ app.post("/api/test/claude", async (req, res) => {
 
 app.get("/api/debug", (req, res) => {
   res.json({
-    rss_mode: "✅ No Twitter API key needed",
+    mode: "FREE RSS — no Twitter API key needed ✅",
     anthropic: process.env.ANTHROPIC_API_KEY ? "SET ✅" : "MISSING ❌",
     facebook_token: process.env.FACEBOOK_PAGE_ACCESS_TOKEN ? "SET ✅" : "MISSING ❌",
     facebook_id: process.env.FACEBOOK_PAGE_ID ? "SET ✅" : "MISSING ❌",
-    node_env: process.env.NODE_ENV,
     port: process.env.PORT,
   });
 });
@@ -429,6 +410,6 @@ app.get("/api/debug", (req, res) => {
 // ─── START SERVER ─────────────────────────────────────────────────────────────
 const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => {
-  addLog("info", `🚀 Server running on http://localhost:${PORT}`);
-  addLog("info", `📡 Using FREE RSS mode — no Twitter API key required!`);
+  addLog("info", `🚀 Server running on port ${PORT}`);
+  addLog("info", `📡 FREE RSS mode — no Twitter API key required!`);
 });
